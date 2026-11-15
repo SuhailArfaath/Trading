@@ -1,0 +1,34 @@
+[workspace]
+name = "trading"
+version = "0.1.0"
+description = "Trading: Combining Markets and Genetis"
+platforms = ["win-64"]
+requires-pixi = ">=0.81.0"
+channels = ["conda-forge"]
+
+[dependencies]
+python = ">=3.14"
+pandas = ">=2.3"
+numpy = ">=2.2"
+pyarrow = ">=21"
+yfinance = ">=0.2.61"
+fastapi = ">=0.115"
+uvicorn = ">=0.34"
+requests = ">=2.32"
+lxml = ">=6"
+
+[tasks]
+# Step 1_Refresh_Index_list: delete + rebuild the index membership files
+# (tickers_us_detail.json, tickers_in_detail.json)
+refresh_market_index_list = "python src/get_data.py --refresh-index"
+# Step 2 + Step 3: prices + indicators (Step 1 is bypassed, cache is reused)
+update-data = "python src/get_data.py"
+# Single markets
+update-data-us = "python src/get_data.py --usa"
+update-data-india = "python src/get_data.py --india"
+# Re-download everything from scratch
+update-data-force = "python src/get_data.py --force"
+# Refresh the locally-cached frontend libs in /cdn from unpkg (latest versions)
+update-cdn = "python src/update_cdn.py"
+# Launch the FastAPI server + Trading UI on http://localhost:8500
+ui = "python src/run_ui.py"

@@ -1,0 +1,134 @@
+---
+title: Trading data pipeline
+---
+flowchart TD
+    %% ==================================================================
+    %% ENTRY POINTS
+    %% ==================================================================
+    START1(["pixi run refresh_market_index_list<br/>[--usa | --india]"]) --> RM0
+    RM0["__main__: strip --refresh-index"] --> RM1["refresh_main()"]
+
+    START2(["pixi run update-data<br/>[--usa | --india] [--force]<br/>[--start D] [--period P] [--interval I]"]) --> M0
+    M0["main()"] --> M1["_resolve_markets(usa, india, market)<br/>explicit --usa/--india win, else both"]
+    M1 --> M2["read_last_updated()<br/>data/last_updated.json"]
+    M2 --> M3{"--force ?"}
+    M3 -->|yes| M4["since = None<br/>FULL reload mode"]
+    M3 -->|no| M5["since = _incremental_start(last_updated)<br/>= last_updated minus 7 days<br/>DEFAULT_START 2000-01-01 if no stamp"]
+    M4 --> M6
+    M5 --> M6["log Yahoo window + interval"]
+    M6 --> M7
+
+    %% ==================================================================
+    %% STEP 1 - refresh path
+    %% ==================================================================
+    subgraph S1["STEP 1_Refresh_Index_list - only via refresh_market_index_list"]
+        direction TB
+        RM1 --> RM2["for each market m"]
+        RM2 --> RM3["refresh_index_list(m)"]
+        RM3 --> RM4["delete data/tickers_*_detail.json"]
+        RM4 --> RM5{"market ?"}
+        RM5 -->|us| RM6["_us_records()<br/>scrape Wikipedia S&P 500 table<br/>pd.read_html, BRK.B becomes BRK-B"]
+        RM5 -->|india| RM7["_india_records()<br/>download NSE ind_nifty500list.csv<br/>Series == EQ, dedupe by Symbol"]
+        RM6 --> RM8["write tickers_us_detail.json<br/>symbol, name, sector, sub-sector"]
+        RM7 --> RM9["write tickers_in_detail.json<br/>symbol, name, sector"]
+        RM8 --> RM10["return sorted unique symbols<br/>(caller discards it - the json file<br/>is the real output)"]
+        RM9 --> RM10
+    end
+
+    %% ==================================================================
+    %% STEP 1 - bypassed by update-data
+    %% ==================================================================
+    subgraph S1B["STEP 1 - BYPASSED by update-data"]
+        direction TB
+        M7["for each market m: _load_universe(m)"] --> M8["load_tickers(m)<br/>read detail json, derive sorted unique symbols"]
+        M8 --> M9{"detail file exists ?"}
+        M9 -->|no| M10["log error: run refresh_market_index_list first"]
+        M9 -->|yes| M11["tickers[m] = symbols"]
+        M10 --> M12{"any market loaded ?"}
+        M11 --> M12
+        M12 -->|no| M13(["abort"])
+        M12 -->|yes| U0
+    end
+
+    %% ==================================================================
+    %% STEP 2
+    %% ==================================================================
+    subgraph S2["STEP 2 Incremental Load data from year 2000"]
+        direction TB
+        U0["update_prices(m, symbols, force, start, period, interval, since)"] --> U1{"--force ?"}
+        U1 -->|no| U2["_market_age_hours(m)<br/>newest parquet mtime"]
+        U2 --> U3{"age at most 20 h ?"}
+        U3 -->|yes| U4["skip downloads, return empty"]
+        U3 -->|no| U5
+        U1 -->|yes| U5["build per-symbol jobs"]
+        U5 --> U6{"per symbol"}
+        U6 -->|"force OR no parquet"| U7["full window, merge=False<br/>OVERWRITE"]
+        U6 -->|"--start given"| U8["start, merge=True"]
+        U6 -->|"--period given"| U9["period, merge=True"]
+        U6 -->|"default"| U10["since, merge=True<br/>INCREMENTAL"]
+        U7 --> U11
+        U8 --> U11
+        U9 --> U11
+        U10 --> U11["ThreadPoolExecutor, 16 workers<br/>fetch_one(sym + suffix, path, ...)"]
+        U11 --> U12["yf.Ticker(sym).history(<br/>interval, auto_adjust=True,<br/>start or period or DEFAULT_START)"]
+        U12 --> U13{"empty result ?"}
+        U13 -->|"yes, merge and file exists"| U14["keep cache, status ok"]
+        U13 -->|"yes, no file"| U15["status: no data returned"]
+        U13 -->|no| U16["select OHLCV, normalize index to date"]
+        U16 --> U17{"merge AND file exists ?"}
+        U17 -->|yes| U18["_merge_bars()<br/>concat old + new<br/>drop duplicate dates, keep last<br/>sort by date"]
+        U17 -->|no| U19["write parquet, overwrite"]
+        U18 --> U19
+        U19 --> U20{"any failures ?"}
+        U20 -->|yes| U21["write data/fetch_errors_market.json"]
+        U4 --> T0
+        U20 -->|no| T0
+        U21 --> T0
+    end
+
+    %% ==================================================================
+    %% STEP 3
+    %% ==================================================================
+    subgraph S3["STEP 3 - indicators + scan table"]
+        direction TB
+        T0["build_scan_table(m, tickers, fetch_errors)"] --> T1["get_details(m)<br/>symbol to name, sector"]
+        T1 --> T2["for each ticker: process_ticker()"]
+        T2 --> T3{"parquet exists ?"}
+        T3 -->|no| T4["error: no data, fetch failed"]
+        T3 -->|yes| T5{"bars at least 60 ?"}
+        T5 -->|no| T6["error: only N bars"]
+        T5 -->|yes| T7["compute indicators<br/>price, 1D/5D/21D/YTD %, RSI(14),<br/>MACD hist, ATR(14), OBV slope,<br/>SMA20/50/200, 52W high/low,<br/>% off 52W high, 21D support/resistance"]
+        T7 --> T8["append row"]
+        T4 --> T9["_fail_reason()<br/>labels Step 2 vs Step 3"]
+        T6 --> T9
+        T8 --> T10["DataFrame to scan_table_market.parquet"]
+        T9 --> T10
+    end
+
+    T10 --> F1["write_last_updated()<br/>data/last_updated.json"]
+    F1 --> F2(["done"])
+
+    %% ==================================================================
+    %% API + UI
+    %% ==================================================================
+    subgraph API["FastAPI backend - src/api.py"]
+        direction TB
+        P1["GET /api/markets/m/scan"] --> P2["payload(m)<br/>read scan_table_market.parquet<br/>to columns + rows JSON"]
+        P3["GET /api/last-updated"] --> P4["read_last_updated()"]
+        P5["POST /api/update-data"] --> P6["_run_task('update-data')<br/>pixi run update-data"]
+        P7["POST /api/refresh-index"] --> P8["_run_task('refresh_market_index_list')"]
+    end
+
+    subgraph UI["Trading.html - Data Load menu"]
+        direction TB
+        W1["Last Updated<br/>GET /api/last-updated"]
+        W2["Refresh Market Index list<br/>POST /api/refresh-index"]
+        W3["Incremental Load<br/>POST /api/update-data"]
+    end
+
+    W1 --> P3
+    W2 --> P7
+    W3 --> P5
+    P6 --> START2
+    P8 --> START1
+    P2 --> W0["DataTable renders rows"]
