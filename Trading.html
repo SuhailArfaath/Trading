@@ -2414,7 +2414,8 @@ function condText(c) {
   return String(c.lo);
 }
 
-function ChartModal({ symbol, market, currency, dark, onClose, onSymbolChange }) {
+function ChartModal({ symbol, market, currency, dark, active, setActive,
+                      onClose, onSymbolChange }) {
   const boxRef = useRef(null);
   const chartRef = useRef(null);
   const menuRef = useRef(null);
@@ -2430,8 +2431,6 @@ function ChartModal({ symbol, market, currency, dark, onClose, onSymbolChange })
   // Applied indicators: [{ key, id, params }]. `key` is unique per instance so
   // the same function can be added twice with different periods (EMA 5 and
   // EMA 20 side by side). `params` overrides the catalogue defaults.
-  // Starts empty: the user picks indicators from the dropdown.
-  const [active, setActive] = useState([]);
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuQuery, setMenuQuery] = useState('');
   const [talibReady, setTalibReady] = useState(false);
@@ -3469,7 +3468,7 @@ function ChartModal({ symbol, market, currency, dark, onClose, onSymbolChange })
 // off a second full Yahoo sweep.
 const INCREMENTAL_COOLDOWN_MS = 10 * 60 * 1000;
 
-function DataLoad() {
+function DataLoad({ markets }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(null);       // 'index' | 'incremental' | null
   const [result, setResult] = useState(null);   // { ok, log } | { ok:false, error }
@@ -3560,7 +3559,10 @@ function DataLoad() {
                                     ' — try again in ' + cooldownText + '.' });
       return;
     }
-    run('incremental', '/api/update-data', 'Incremental load finished.');
+    const market = markets.us === markets.india
+      ? ''
+      : '?market=' + (markets.us ? 'us' : 'india');
+    run('incremental', '/api/update-data' + market, 'Incremental load finished.');
   };
 
   // "2026-11-01T17:26:00" -> "01 Nov 2026, 17:26"
@@ -3633,18 +3635,36 @@ function DataLoad() {
 }
 
 /* ================================================================ header */
-function Header({ activeTab, onTab, onClear, search, onSearch, dark, onToggleTheme,
+function Header({ activeTab, markets, onMarketSelectionChange, onTab, onClear,
+                  search, onSearch, dark, onToggleTheme,
                   columns, prefs, onPrefsChange, onResetPrefs }) {
   // Market tabs: sized to fill the header bar, with a bright glow on hover.
   // The glow colour is a token so it reads well on both themes.
-  const tab = (key, cls, label) => h('button', {
-    key: key, onClick: () => onTab(key),
-    // py-1.5 + text-[12px] matches the Data Load button's box exactly, so the
-    // tabs line up with the rest of the header controls.
-    className: 'market-tab whitespace-nowrap rounded-lg px-5 py-1.5 text-[12px] font-bold text-white ' +
-               'transition-all duration-150 ' + cls +
-               (activeTab === key ? ' is-active' : ''),
-  }, label);
+  const tab = (key, cls, label) => {
+    const checked = markets[key];
+    const otherMarket = key === 'us' ? 'india' : 'us';
+    return h('div', {
+      key: key,
+      className: 'market-tab flex items-center gap-2 whitespace-nowrap rounded-lg px-3 py-1.5 ' +
+                 'transition-all duration-150 ' + cls +
+                 (activeTab === key ? ' is-active' : ''),
+    },
+      h('input', {
+        type: 'checkbox',
+        checked: checked,
+        disabled: checked && !markets[otherMarket],
+        onChange: e => onMarketSelectionChange(key, e.target.checked),
+        'aria-label': 'Include ' + label + ' in incremental loads',
+        className: 'h-4 w-4 cursor-pointer accent-[#00cc44] disabled:cursor-not-allowed',
+      }),
+      h('button', {
+        type: 'button',
+        onClick: () => onTab(key),
+        disabled: !checked,
+        'aria-current': activeTab === key ? 'page' : undefined,
+        className: 'whitespace-nowrap text-[12px] font-bold text-white disabled:cursor-not-allowed',
+      }, label));
+  };
   return h('div', {
     // left (market tabs) | right (controls).
     //
@@ -3673,7 +3693,7 @@ function Header({ activeTab, onTab, onClear, search, onSearch, dark, onToggleThe
         className: 'theme-btn shrink-0 whitespace-nowrap rounded-[7px] border-2 border-border px-3 py-1.5 ' +
                    'text-[12px] font-semibold transition-colors',
       }, dark ? '☀ Light' : '☾ Dark'),
-      h(DataLoad),
+      h(DataLoad, { markets }),
       h(ColumnSelector, {
         columns, prefs, onChange: onPrefsChange, onReset: onResetPrefs,
       }),
@@ -3688,7 +3708,35 @@ function Header({ activeTab, onTab, onClear, search, onSearch, dark, onToggleThe
 // Column layout prefs (order + hidden keys) per market tab, persisted in
 // localStorage so they survive a page refresh.
 const PREFS_KEY = 'trading.tablePrefs.v1';
+const MARKET_SELECTION_KEY = 'trading.marketSelection.v1';
+const ACTIVE_INDICATORS_KEY = 'trading.activeIndicators.v1';
 const EMPTY_PREFS = { order: [], hidden: [] };
+
+function loadActiveIndicators() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(ACTIVE_INDICATORS_KEY) || 'null');
+    if (!Array.isArray(saved)) return [];
+    return saved.filter(item =>
+      item && typeof item.key === 'string' && typeof item.id === 'string' &&
+      item.params && typeof item.params === 'object' && !Array.isArray(item.params));
+  } catch { return []; }
+}
+
+function loadMarketSelection() {
+  const fallback = { markets: { us: true, india: true }, activeTab: 'us' };
+  try {
+    const saved = JSON.parse(localStorage.getItem(MARKET_SELECTION_KEY) || 'null');
+    if (!saved || typeof saved !== 'object' || !saved.markets) return fallback;
+    const markets = {
+      us: saved.markets.us === true,
+      india: saved.markets.india === true,
+    };
+    if (!markets.us && !markets.india) return fallback;
+    const activeTab = markets[saved.activeTab] ? saved.activeTab
+      : markets.us ? 'us' : 'india';
+    return { markets, activeTab };
+  } catch { return fallback; }
+}
 
 function loadPrefs() {
   try {
@@ -3699,7 +3747,9 @@ function loadPrefs() {
 }
 
 function App() {
-  const [activeTab, setActiveTab] = useState('us');
+  const [marketSelection, setMarketSelection] = useState(loadMarketSelection);
+  const activeTab = marketSelection.activeTab;
+  const markets = marketSelection.markets;
   const [usData, setUsData] = useState(null);
   const [indiaData, setIndiaData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -3707,6 +3757,7 @@ function App() {
   const [search, setSearch] = useState('');
   const [dark, setDark] = useState(true);
   const [prefs, setPrefs] = useState(loadPrefs);
+  const [activeIndicators, setActiveIndicators] = useState(loadActiveIndicators);
   const [epoch, setEpoch] = useState(0);   // bump to force a table rebuild
   const [filterReset, setFilterReset] = useState(0);   // bump to clear column filters
   const [chartSymbol, setChartSymbol] = useState(null);   // ticker shown in the chart modal
@@ -3718,6 +3769,26 @@ function App() {
   useEffect(() => {
     try { localStorage.setItem(PREFS_KEY, JSON.stringify(prefs)); } catch { /* quota / private mode */ }
   }, [prefs]);
+
+  useEffect(() => {
+    try { localStorage.setItem(MARKET_SELECTION_KEY, JSON.stringify(marketSelection)); }
+    catch { /* quota / private mode */ }
+  }, [marketSelection]);
+
+  useEffect(() => {
+    try { localStorage.setItem(ACTIVE_INDICATORS_KEY, JSON.stringify(activeIndicators)); }
+    catch { /* quota / private mode */ }
+  }, [activeIndicators]);
+
+  const updateMarketSelection = (market, checked) => setMarketSelection(current => {
+    const nextMarkets = { ...current.markets, [market]: checked };
+    if (!nextMarkets.us && !nextMarkets.india) return current;
+    return {
+      markets: nextMarkets,
+      activeTab: nextMarkets[current.activeTab] ? current.activeTab
+        : nextMarkets.us ? 'us' : 'india',
+    };
+  });
 
   const tabPrefs = prefs[activeTab] || EMPTY_PREFS;
 
@@ -3777,7 +3848,12 @@ function App() {
   }, [data, search, colIdx]);
 
   // rows = the (sorted) array the grid renders. Its length is the row count
-  const switchTab = (t) => { setActiveTab(t); setSearch(''); setChartSymbol(null); };
+  const switchTab = (t) => {
+    if (!markets[t]) return;
+    setMarketSelection(current => ({ ...current, activeTab: t }));
+    setSearch('');
+    setChartSymbol(null);
+  };
   const clearFilters = () => { setSearch(''); setFilterReset(n => n + 1); };
 
   // Clicking a row opens the chart modal for that ticker.
@@ -3789,7 +3865,8 @@ function App() {
     h(SplashScreen, { onDone: () => setBooted(true) }),
     h('div', { className: 'flex h-screen flex-col overflow-hidden' },
       h(Header, {
-        activeTab, onTab: switchTab, onClear: clearFilters,
+        activeTab, markets, onMarketSelectionChange: updateMarketSelection,
+        onTab: switchTab, onClear: clearFilters,
         search, onSearch: setSearch, dark, onToggleTheme: () => setDark(d => !d),
         columns: data ? data.columns : [],
         prefs: tabPrefs, onPrefsChange: updateTabPrefs, onResetPrefs: resetTabPrefs,
@@ -3808,6 +3885,8 @@ function App() {
           symbol: chartSymbol,
           market: activeTab,
           currency: (data && data.currency) || '',
+          active: activeIndicators,
+          setActive: setActiveIndicators,
           // The chart is a canvas, so it cannot inherit the CSS tokens. It has
           // to be rebuilt when the theme flips.
           dark,

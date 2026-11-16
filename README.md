@@ -130,6 +130,16 @@ globals this build-free page expects.
 The FastAPI server (`src/api.py`) serves both the HTML page at `/` and the JSON
 scan endpoints at `/api/markets/{us,india}/scan`.
 
+The checkboxes beside the USA and India tabs choose which markets an
+incremental load updates. At least one market must remain selected; selecting
+only one also keeps the UI on that market. The selection and active market are
+stored in browser local storage, so they persist across page reloads and server
+restarts.
+
+Applied chart indicators, including their parameters and duplicate instances,
+are also stored in browser local storage. They remain applied when the chart is
+closed, another stock is opened, or the page is reloaded.
+
 ### Custom indicators (Python, `src/indicators`)
 
 The chart's **Indicators** dropdown lists every indicator found in
