@@ -117,6 +117,9 @@ The frontend is a single-page app (`Trading.html`) built with:
 - **Lightweight Charts 5** — the ticker chart modal
 - **talib-web** — TA-Lib compiled to WebAssembly, for the indicators
 
+On page load, `cdn/mds_logo.png` animates from the center to the top of the
+screen before the existing splash screen appears, and stays pinned above it.
+
 All of them are cached in `cdn/` and served from `/cdn/...` by the FastAPI
 server, so the app never needs the internet. To pull the latest published
 versions into `cdn/`, run `pixi run update-cdn` (or
@@ -129,6 +132,16 @@ globals this build-free page expects.
 
 The FastAPI server (`src/api.py`) serves both the HTML page at `/` and the JSON
 scan endpoints at `/api/markets/{us,india}/scan`.
+
+The checkboxes beside the USA and India tabs choose which markets an
+incremental load updates. At least one market must remain selected; selecting
+only one also keeps the UI on that market. The selection and active market are
+stored in browser local storage, so they persist across page reloads and server
+restarts.
+
+Applied chart indicators, including their parameters and duplicate instances,
+are also stored in browser local storage. They remain applied when the chart is
+closed, another stock is opened, or the page is reloaded.
 
 ### Custom indicators (Python, `src/indicators`)
 
